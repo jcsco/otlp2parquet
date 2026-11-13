@@ -108,6 +108,24 @@ pub fn apply_env_overrides<E: EnvSource>(config: &mut RuntimeConfig, env: &E) ->
         ensure_r2(config).prefix = normalize_prefix(prefix);
     }
 
+    // Parquet VARIANT output
+    if let Some(val) = get_env_bool(env, "PARQUET_VARIANT_ENABLED")? {
+        config.parquet.variant.enabled = val;
+    }
+    if let Some(cols) = get_env_string(env, "PARQUET_VARIANT_COLUMNS")? {
+        config.parquet.variant.columns = cols
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    // JSON document with the same shape as the [parquet.variant.shred] TOML table
+    if let Some(json) = get_env_string(env, "PARQUET_VARIANT_SHRED")? {
+        config.parquet.variant.shred = serde_json::from_str(&json)
+            .with_context(|| format!("Invalid {}PARQUET_VARIANT_SHRED JSON", ENV_PREFIX))?;
+    }
+
     Ok(())
 }
 
