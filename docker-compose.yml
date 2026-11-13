@@ -4,7 +4,7 @@
 services:
   # MinIO - S3-compatible object storage
   minio:
-    image: minio/minio:latest
+    image: ${DOCKER_HUB_MIRROR:-}minio/minio:latest
     ports:
       - "${MINIO_API_PORT:-9000}:9000"
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
@@ -27,7 +27,7 @@ services:
 
   # Create bucket automatically
   minio-init:
-    image: minio/mc:latest
+    image: ${DOCKER_HUB_MIRROR:-}minio/mc:latest
     depends_on:
       minio:
         condition: service_healthy

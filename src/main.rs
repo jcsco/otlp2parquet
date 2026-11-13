@@ -41,6 +41,13 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // OpenDAL >= 0.58 ships its HTTP transport as a separate crate and has no built-in default.
+    // The transport is built with `rustls-no-provider`, so a rustls crypto provider must be
+    // installed process-wide (ring, no aws-lc) or reqwest panics when building its first client.
+    // An Err means a provider is already installed, which is fine.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    opendal_http_transport_reqwest::install_default();
+
     let cli = Cli::parse();
 
     match cli.command {

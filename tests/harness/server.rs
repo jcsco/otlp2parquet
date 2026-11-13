@@ -13,6 +13,18 @@ use tokio::process::Command;
 
 const S3_BUCKET: &str = "otlp";
 
+/// Host on which Docker-published ports are reachable from the test process.
+///
+/// Defaults to `localhost`. When the tests run inside a devcontainer that talks to the
+/// host's Docker daemon (docker-outside-of-docker), published ports live on the Docker
+/// host rather than the container, so set `SMOKE_DOCKER_HOST=host.docker.internal`.
+fn docker_host() -> String {
+    std::env::var("SMOKE_DOCKER_HOST")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "localhost".to_string())
+}
+
 /// Server harness for Docker Compose testing
 pub struct ServerHarness {
     compose_project_name: String,
@@ -293,8 +305,8 @@ impl SmokeTestHarness for ServerHarness {
         }
 
         // Build endpoint URLs with dynamic ports
-        let minio_endpoint = format!("http://localhost:{}", self.minio_api_port);
-        let otlp_endpoint = format!("http://localhost:{}", self.http_port);
+        let minio_endpoint = format!("http://{}:{}", docker_host(), self.minio_api_port);
+        let otlp_endpoint = format!("http://{}:{}", docker_host(), self.http_port);
 
         // Wait for MinIO to be ready
         tracing::info!("Waiting for MinIO...");
@@ -457,7 +469,7 @@ impl SmokeTestHarness for ServerHarness {
     }
 
     fn duckdb_verifier(&self, _info: &DeploymentInfo) -> DuckDBVerifier {
-        let minio_endpoint = format!("http://localhost:{}", self.minio_api_port);
+        let minio_endpoint = format!("http://{}:{}", docker_host(), self.minio_api_port);
 
         tracing::debug!("Creating DuckDB verifier with minio={}", minio_endpoint);
 
