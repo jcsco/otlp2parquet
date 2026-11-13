@@ -14,6 +14,8 @@ help: ## Show this help message
 check: ## Run cargo check on all feature combinations
 	@echo "==> Checking server..."
 	@cargo check
+	@echo "==> Checking server (variant)..."
+	@cargo check --features variant
 
 .PHONY: fmt
 fmt: ## Format all Rust code
@@ -27,11 +29,15 @@ fmt-check: ## Check Rust code formatting
 clippy: ## Run clippy on all feature combinations
 	@echo "==> Clippy server..."
 	@cargo clippy --all-targets -- -D warnings
+	@echo "==> Clippy server (variant)..."
+	@cargo clippy --all-targets --features variant -- -D warnings
 
 .PHONY: test
 test: ## Run tests for all testable feature combinations
 	@echo "==> Testing server..."
 	@cargo test
+	@echo "==> Testing server (variant)..."
+	@cargo test --features variant
 
 .PHONY: test-verbose
 test-verbose: ## Run tests with verbose output
@@ -59,6 +65,12 @@ build-server: ## Build server binary only (default mode)
 build-cli: ## Build CLI binary in release mode
 	@echo "==> Building otlp2parquet CLI binary..."
 	@cargo build --release --bin otlp2parquet
+	@echo "==> Binary available at: target/release/otlp2parquet"
+
+.PHONY: build-cli-variant
+build-cli-variant: ## Build CLI binary in release mode with Parquet VARIANT output
+	@echo "==> Building otlp2parquet CLI binary (variant)..."
+	@cargo build --release --bin otlp2parquet --features variant
 	@echo "==> Binary available at: target/release/otlp2parquet"
 
 .PHONY: install-cli
