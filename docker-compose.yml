@@ -131,6 +131,173 @@ services:
       - --service=telemetrygen-logs
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Parquet VARIANT + shredding demo (profile: variant)
+  #
+  # Starts a VARIANT-enabled otlp2parquet that writes to MinIO (S3) under the
+  # `variant/` prefix, a small loop that sends sample traces, logs and metrics, and
+  # (on demand) a DataFusion tool that queries the shredded columns straight from
+  # MinIO. Starting the server also starts MinIO and creates the bucket. The
+  # default otlp2parquet and telemetrygen services are not started.
+  #
+  #   docker compose up -d --build otlp2parquet-variant variant-load
+  #   docker compose run --rm datafusion        # run the default query
+  #   docker compose run --rm datafusion s3://otlp/variant/traces span_attributes http.route "SELECT ..."
+  # ---------------------------------------------------------------------------
+
+  # otlp2parquet built with the `variant` cargo feature, writing VARIANT Parquet
+  # with selected attribute keys shredded into typed columns.
+  otlp2parquet-variant:
+    profiles: ["variant"]
+    build:
+      context: .
+      args:
+        CARGO_FEATURES: variant
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    networks:
+      otlp_net:
+    ports:
+      - "${VARIANT_HTTP_PORT:-4319}:4318"
+    environment:
+      # Write to the same MinIO as the default service, but under its own prefix so
+      # VARIANT files never mix with the plain-Parquet files: s3://otlp/variant/...
+      OTLP2PARQUET_STORAGE_BACKEND: s3
+      OTLP2PARQUET_S3_BUCKET: ${S3_BUCKET:-otlp}
+      OTLP2PARQUET_S3_REGION: ${S3_REGION:-us-east-1}
+      OTLP2PARQUET_S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      OTLP2PARQUET_S3_PREFIX: ${VARIANT_S3_PREFIX:-variant/}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      OTLP2PARQUET_LISTEN_ADDR: 0.0.0.0:4318
+      OTLP2PARQUET_BATCHING_ENABLED: "false"
+
+      # Write these JSON columns as Parquet VARIANT (logs, traces and metrics) ...
+      OTLP2PARQUET_PARQUET_VARIANT_ENABLED: "true"
+      OTLP2PARQUET_PARQUET_VARIANT_COLUMNS: resource_attributes,span_attributes,log_attributes,metric_attributes,body
+      # ... and shred these attribute keys into typed columns. Keys are exact
+      # names (dots are part of the key). Types: bool, int32, int64, float64, utf8.
+      #
+      # Metrics: the `metrics` table applies to every metric type (here: sum). A
+      # per-type table (`gauge`, `histogram`) REPLACES it for that type, so it must
+      # repeat resource_attributes if you still want those keys shredded.
+      OTLP2PARQUET_PARQUET_VARIANT_SHRED: >-
+        {"traces": {
+          "span_attributes": {
+            "http.request.method": "utf8",
+            "http.route": "utf8",
+            "http.response.status_code": "int64"
+          },
+          "resource_attributes": {
+            "service.namespace": "utf8",
+            "deployment.environment": "utf8"
+          }
+        },
+        "logs": {
+          "log_attributes": {
+            "http.route": "utf8",
+            "http.response.status_code": "int64"
+          },
+          "resource_attributes": {
+            "service.namespace": "utf8",
+            "deployment.environment": "utf8"
+          }
+        },
+        "metrics": {
+          "metric_attributes": {
+            "http.route": "utf8",
+            "http.response.status_code": "int64"
+          },
+          "resource_attributes": {
+            "service.namespace": "utf8",
+            "deployment.environment": "utf8"
+          },
+          "gauge": {
+            "metric_attributes": {"host": "utf8", "cpu": "int64"},
+            "resource_attributes": {
+              "service.namespace": "utf8",
+              "deployment.environment": "utf8"
+            }
+          },
+          "histogram": {
+            "metric_attributes": {"http.route": "utf8", "http.request.method": "utf8"},
+            "resource_attributes": {
+              "service.namespace": "utf8",
+              "deployment.environment": "utf8"
+            }
+          }
+        }}
+    restart: unless-stopped
+
+  # Posts the OTLP/JSON samples in examples/variant-demo/ (traces, logs, metrics)
+  # every 5 seconds with fresh timestamps. The payloads have known attributes
+  # (HTTP method, route, status code; gauge host/cpu; a histogram; structured log
+  # bodies) plus a few unshredded keys such as `app.latency_ms` and `user.tier`.
+  variant-load:
+    profiles: ["variant"]
+    # Payloads are baked into the image instead of bind-mounted, so this works even
+    # when the Docker daemon cannot see this directory (devcontainer, remote Docker).
+    build:
+      context: ./examples/variant-demo
+      args:
+        DOCKER_HUB_MIRROR: ${DOCKER_HUB_MIRROR:-}
+    depends_on:
+      - otlp2parquet-variant
+    networks:
+      otlp_net:
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          START="$$(date +%s)000000000"
+          END="$$(( $$(date +%s) + 1 ))000000000"
+          for signal in traces logs metrics; do
+            sed "s/__START__/$$START/g; s/__END__/$$END/g" /payload/$$signal.json \
+              | curl -fsS -X POST http://otlp2parquet-variant:4318/v1/$$signal \
+                  -H 'content-type: application/json' --data-binary @-
+            echo
+          done
+          sleep 5
+        done
+    restart: unless-stopped
+
+  # DataFusion + datafusion-variant query tool (see examples/datafusion-variant-check).
+  # Run on demand; it reads the VARIANT files straight from MinIO over S3.
+  #   args: <dir> <variant-column> <key> [sql]   (the data is exposed as table `t`)
+  # Locations: s3://otlp/variant/{traces,logs} and s3://otlp/variant/metrics/{gauge,sum,histogram}
+  datafusion:
+    profiles: ["query"]
+    build: ./examples/datafusion-variant-check
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      otlp_net:
+    environment:
+      # Endpoint and credentials for the S3 client (read by the tool from AWS_*)
+      AWS_ENDPOINT_URL: ${S3_ENDPOINT:-http://minio:9000}
+      AWS_REGION: ${S3_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    # Default: error rate by route, over the shredded http.* keys. With only three
+    # arguments (<dir> <column> <key>) the tool instead runs a short check that
+    # prints which keys the column shreds and how many rows have <key>.
+    # ($$ is how compose writes a literal $.)
+    command:
+      - s3://${S3_BUCKET:-otlp}/${VARIANT_S3_PREFIX:-variant/}traces
+      - span_attributes
+      - http.route
+      - >-
+        SELECT variant_get(span_attributes, '$$[''http.route'']', 'VARCHAR') AS route,
+        count(*) AS spans,
+        count(*) FILTER (WHERE variant_get(span_attributes,
+        '$$[''http.response.status_code'']', 'BIGINT') >= 500) AS errors
+        FROM t GROUP BY 1 ORDER BY errors DESC, spans DESC
+    restart: "no"
+
 volumes:
   minio-data:
 networks:
@@ -150,3 +317,15 @@ networks:
 #   SET s3_endpoint='localhost:9000'; SET s3_url_style='path'; SET s3_use_ssl=false;
 #   SET s3_access_key_id='minioadmin'; SET s3_secret_access_key='minioadmin';
 #   SELECT * FROM read_parquet('s3://otlp/otel/otel_logs/data/*.parquet') LIMIT 10;"
+#
+# Parquet VARIANT with shredding on MinIO (S3), queried with DataFusion (separate instance):
+#   docker compose up -d --build otlp2parquet-variant variant-load
+#   # wait ~10 seconds for files to be written, then:
+#   docker compose run --rm datafusion
+#   docker compose run --rm datafusion s3://otlp/variant/traces span_attributes http.route \
+#     "SELECT variant_get(span_attributes, '\$[''http.route'']', 'VARCHAR') AS route, count(*) AS spans FROM t GROUP BY 1"
+#   (inside the SQL string a single quote is written as two; \$ stops the shell expanding it)
+#   Logs and metrics are shredded too: s3://otlp/variant/logs (log_attributes),
+#   s3://otlp/variant/metrics/sum (metric_attributes)
+#   OTLP endpoints for this instance: http://localhost:4319/v1/{traces,logs,metrics}
+#   Browse the files in the MinIO console (http://localhost:9001), bucket `otlp`, folder `variant/`.

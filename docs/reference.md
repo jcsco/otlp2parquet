@@ -70,7 +70,7 @@ resource_attributes = { "service.name" = "utf8" }
 [parquet.variant.shred.metrics]
 metric_attributes = { "http.route" = "utf8" }
 
-# ... unless a per-type table is given, which replaces the shared one for that type.
+# ... unless a per-type table is given. It replaces the whole shared table for that type, including other columns such as resource_attributes.
 [parquet.variant.shred.metrics.gauge]
 metric_attributes = { "host" = "utf8", "cpu" = "int64" }
 ```
