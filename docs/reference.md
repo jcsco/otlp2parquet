@@ -44,7 +44,7 @@ Opt-in. Requires a build with the `variant` cargo feature (`make build-cli-varia
 | `OTLP2PARQUET_PARQUET_VARIANT_COLUMNS` | attribute maps | Comma-separated column list |
 | `OTLP2PARQUET_PARQUET_VARIANT_SHRED` | - | JSON document with the same shape as `[parquet.variant.shred]` |
 
-See [Parquet VARIANT](#parquet-variant) below.
+See [Parquet VARIANT](#parquet-variant) below and [Variant shredding examples](variant-shredding.md).
 
 ---
 

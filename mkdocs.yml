@@ -63,6 +63,7 @@ nav:
   - "Deploy": "deploying.md"
   - "Send Data": "sending-data.md"
   - "Query Data": "querying.md"
+  - "Variant Shredding": "variant-shredding.md"
   - "Reference": "reference.md"
 
 plugins:

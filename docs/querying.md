@@ -172,7 +172,7 @@ Notes (as of `datafusion-variant` `3dbb436`, DataFusion `branch-56`):
 - `to_json` of a whole *shredded* object column is not implemented yet in that version (it fails asking for `unshred_variant`). `to_json` works on unshredded columns, and `variant_get` works on both.
 - DataFusion did not find files when `LOCATION` points at several levels of Hive-style directories (for example `data/traces/`). Point `LOCATION` at a single file or a directory holding the files, such as one `hour=` folder.
 
-A runnable check lives in `examples/datafusion-variant-check`:
+More recipes: [Variant shredding examples](variant-shredding.md). A runnable check lives in `examples/datafusion-variant-check`:
 
 ```bash
 make check-datafusion DIR=./data/traces COLUMN=span_attributes KEY=http.request.method
