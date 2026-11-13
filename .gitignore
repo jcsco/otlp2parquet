@@ -64,3 +64,4 @@ template.yaml
 
 # Local planning docs
 docs/plans/
+examples/*/target/
