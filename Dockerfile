@@ -19,8 +19,10 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-# Build the binary
-RUN cargo build --release --bin otlp2parquet
+# Build the binary. Set CARGO_FEATURES=variant to enable Parquet VARIANT output:
+#   docker build --build-arg CARGO_FEATURES=variant .
+ARG CARGO_FEATURES=""
+RUN cargo build --release --bin otlp2parquet ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
 
 # Strip binary for smaller size
 RUN strip target/release/otlp2parquet
