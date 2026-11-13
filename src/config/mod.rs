@@ -22,6 +22,10 @@ pub use platform::Platform;
 pub use variant::{
     ColumnShred, MetricsShredConfig, ParquetConfig, ShredConfig, ShredType, VariantConfig,
 };
+#[cfg(feature = "variant")]
+pub(crate) use variant::{
+    LOGS_VARIANT_COLUMNS, METRICS_VARIANT_COLUMNS, METRIC_KINDS, TRACES_VARIANT_COLUMNS,
+};
 
 /// Main runtime configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

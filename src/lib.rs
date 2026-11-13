@@ -45,6 +45,8 @@ use tracing::{debug, error, info, warn};
 
 mod handlers;
 mod init;
+#[cfg(feature = "variant")]
+mod variant;
 mod writer;
 
 pub mod connect;
