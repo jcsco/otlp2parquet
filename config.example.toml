@@ -106,3 +106,23 @@ log_level = "info"
 # Log format: Output format for logs
 # Options: "text" | "json"
 log_format = "text"
+
+
+# ==============================================================================
+# Parquet VARIANT output (opt-in; needs a build with `--features variant`)
+# ==============================================================================
+# Writes JSON-string columns as the Parquet VARIANT type, optionally shredding
+# chosen attribute keys into typed columns. Off by default.
+# [parquet.variant]
+# enabled = true
+# # Default: resource_attributes, scope_attributes, log_attributes, span_attributes, metric_attributes
+# # Also allowed: body, events_json, links_json, exemplars_json
+# columns = ["resource_attributes", "span_attributes", "metric_attributes"]
+#
+# # Shred types: bool, int32, int64, float64, utf8. Keys are exact (dots are not nesting).
+# [parquet.variant.shred.traces]
+# span_attributes = { "http.request.method" = "utf8", "http.response.status_code" = "int64" }
+#
+# # Applies to all metric types; add [parquet.variant.shred.metrics.gauge] (etc.) to override one.
+# [parquet.variant.shred.metrics]
+# metric_attributes = { "http.route" = "utf8" }
