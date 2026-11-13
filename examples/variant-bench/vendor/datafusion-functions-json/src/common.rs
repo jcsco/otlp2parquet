@@ -1,0 +1,868 @@
+use std::borrow::Cow;
+use std::sync::Arc;
+
+use datafusion::arrow::array::{
+    downcast_array, AnyDictionaryArray, Array, ArrayAccessor, ArrayRef, AsArray, DictionaryArray,
+    LargeStringArray, PrimitiveArray, PrimitiveBuilder, RunArray, StringArray, StringViewArray,
+};
+use datafusion::arrow::compute::kernels::cast;
+use datafusion::arrow::compute::take;
+use datafusion::arrow::datatypes::{ArrowNativeType, DataType, Int64Type, UInt64Type};
+use datafusion::common::{exec_err, plan_err, Result as DataFusionResult, ScalarValue};
+use datafusion::logical_expr::ColumnarValue;
+use jiter::{Jiter, JiterError, Peek};
+
+use crate::common_union::{
+    is_json_union, json_from_union_scalar, nested_json_array, nested_json_array_ref, TYPE_ID_NULL,
+};
+
+/// General implementation of `ScalarUDFImpl::return_type`.
+///
+/// # Type parameters
+///
+/// * `R` - the `InvokeResult` implementation the function passes to [`invoke`]; its
+///   `ACCEPT_DICT_RETURN` decides whether a dictionary JSON argument, column or scalar, produces a
+///   dictionary output, so reading it here keeps the declared return type in step with what every
+///   path of `invoke` builds (see [`returns_dictionary`])
+///
+/// # Arguments
+///
+/// * `args` - The arguments to the function
+/// * `fn_name` - The name of the function
+/// * `value_type` - The general return type of the function, might be wrapped in a dictionary depending
+///   on the first argument
+pub fn return_type_check<R: InvokeResult>(
+    args: &[DataType],
+    fn_name: &str,
+    value_type: DataType,
+) -> DataFusionResult<DataType> {
+    let Some(first) = args.first() else {
+        return plan_err!("The '{fn_name}' function requires one or more arguments.");
+    };
+    if !(is_str(first) || is_json_union(first) || dict_key_type(first).is_some()) {
+        // if !matches!(first, DataType::Utf8 | DataType::LargeUtf8) {
+        return plan_err!("Unexpected argument type to '{fn_name}' at position 1, expected a string, got {first:?}.");
+    }
+    args.iter().skip(1).enumerate().try_for_each(|(index, arg)| {
+        let is_int_dict = matches!(arg, DataType::Dictionary(_, value) if is_int(value));
+        if is_str(arg) || is_int(arg) || is_path_list(arg) || dict_key_type(arg).is_some() || is_int_dict {
+            Ok(())
+        } else {
+            plan_err!(
+                "Unexpected argument type to '{fn_name}' at position {}, expected string or int, got {arg:?}.",
+                index + 2
+            )
+        }
+    })?;
+    if returns_dictionary::<R>(first) {
+        Ok(DataType::Dictionary(
+            Box::new(DataType::Int64),
+            Box::new(value_type),
+        ))
+    } else {
+        Ok(value_type)
+    }
+}
+
+/// Whether `R`'s result for a JSON argument of type `json_type` is a `Dictionary(Int64, _)`.
+///
+/// `return_type_check` declares its type from this and the scalar paths of `invoke` wrap their
+/// result from it. The array paths, `invoke_array_array` and `invoke_array_scalars`, already know
+/// their input is a dictionary from the branch they are in, and wrap if `R::ACCEPT_DICT_RETURN`.
+fn returns_dictionary<R: InvokeResult>(json_type: &DataType) -> bool {
+    R::ACCEPT_DICT_RETURN && dict_key_type(json_type).is_some()
+}
+
+fn is_str(d: &DataType) -> bool {
+    matches!(d, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
+}
+
+fn is_int(d: &DataType) -> bool {
+    // TODO we should support more types of int, but that's a longer task
+    matches!(d, DataType::UInt64 | DataType::Int64)
+}
+
+/// A list usable as a whole path, e.g. `array['a', 'b']` or `array[0, 1]`, with one step per
+/// element. `Null` elements are what an unbound placeholder such as `array[$1]` has at
+/// planning time.
+fn is_path_list(d: &DataType) -> bool {
+    matches!(d, DataType::List(field) if is_str(field.data_type()) || is_int(field.data_type()) || field.data_type() == &DataType::Null)
+}
+
+fn dict_key_type(d: &DataType) -> Option<DataType> {
+    if let DataType::Dictionary(key, value) = d {
+        if is_str(value) || is_json_union(value) {
+            return Some(*key.clone());
+        }
+    }
+    None
+}
+
+#[derive(Debug)]
+pub enum JsonPath<'s> {
+    Key(Cow<'s, str>),
+    /// A negative index counts from the end of the array, as in postgres.
+    Index(isize),
+    None,
+}
+
+impl JsonPath<'_> {
+    fn into_owned(self) -> JsonPath<'static> {
+        match self {
+            JsonPath::Key(key) => JsonPath::Key(Cow::Owned(key.into_owned())),
+            JsonPath::Index(index) => JsonPath::Index(index),
+            JsonPath::None => JsonPath::None,
+        }
+    }
+}
+
+impl<'a> From<&'a str> for JsonPath<'a> {
+    fn from(key: &'a str) -> Self {
+        JsonPath::Key(Cow::Borrowed(key))
+    }
+}
+
+impl From<u64> for JsonPath<'_> {
+    fn from(index: u64) -> Self {
+        isize::try_from(index).map_or(JsonPath::None, JsonPath::Index)
+    }
+}
+
+impl From<i64> for JsonPath<'_> {
+    fn from(index: i64) -> Self {
+        isize::try_from(index).map_or(JsonPath::None, JsonPath::Index)
+    }
+}
+
+#[derive(Debug)]
+enum JsonPathArgs<'a> {
+    Array(&'a ArrayRef),
+    Scalars(Vec<JsonPath<'a>>),
+}
+
+impl<'s> JsonPathArgs<'s> {
+    fn extract_path(path_args: &'s [ColumnarValue]) -> DataFusionResult<Self> {
+        // If there is a single argument as an array, we know how to handle it
+        if let Some((ColumnarValue::Array(array), &[])) = path_args.split_first() {
+            return Ok(Self::Array(array));
+        }
+
+        let mut path = Vec::with_capacity(path_args.len());
+        for (pos, arg) in path_args.iter().enumerate() {
+            match arg {
+                ColumnarValue::Scalar(ScalarValue::List(list)) => {
+                    // a whole path as one list, e.g. `array['a', 'b']`, with one step per element.
+                    // There are two levels here: a scalar list is a `ListArray` holding exactly
+                    // one row, and `value(0)` unwraps that row into the array of its elements
+                    if list.len() != 1 {
+                        return exec_err!(
+                            "Expected a scalar list as a JSON path, got {} rows.",
+                            list.len()
+                        );
+                    }
+                    let elements = list.value(0);
+                    for i in 0..elements.len() {
+                        let element = ScalarValue::try_from_array(&elements, i)?;
+                        path.push(scalar_path(&element, pos)?.into_owned());
+                    }
+                }
+                ColumnarValue::Scalar(scalar) => path.push(scalar_path(scalar, pos)?),
+                ColumnarValue::Array(_) => {
+                    // if there was a single arg, which is an array, handled above in the
+                    // split_first case. So this is multiple args of which one is an array
+                    return exec_err!("More than 1 path element is not supported when querying JSON using an array.");
+                }
+            }
+        }
+        Ok(Self::Scalars(path))
+    }
+}
+
+/// One path step from a scalar: a string is a key, an integer an index, and a null a null step.
+fn scalar_path(scalar: &ScalarValue, pos: usize) -> DataFusionResult<JsonPath<'_>> {
+    if scalar.is_null() {
+        return Ok(JsonPath::None);
+    }
+    if let Some(Some(key)) = scalar.try_as_str() {
+        return Ok(key.into());
+    }
+    match scalar {
+        ScalarValue::UInt64(Some(i)) => Ok((*i).into()),
+        ScalarValue::Int64(Some(i)) => Ok((*i).into()),
+        // `try_as_str` already sees through a dictionary of strings, not one of integers
+        ScalarValue::Dictionary(_, value) => scalar_path(value, pos),
+        other => exec_err!(
+            "Unexpected argument type at position {}, expected string or int, got {other:?}.",
+            pos + 1
+        ),
+    }
+}
+
+pub trait InvokeResult {
+    type Item;
+    type Builder;
+
+    /// Whether a dictionary-encoded JSON argument, column or scalar, produces a `Dictionary(Int64, _)`
+    /// result; read by both `return_type_check` (the declared type) and `invoke` (the built result),
+    /// so they agree
+    const ACCEPT_DICT_RETURN: bool;
+
+    fn builder(capacity: usize) -> Self::Builder;
+    fn append_value(builder: &mut Self::Builder, value: Option<Self::Item>);
+    fn finish(builder: Self::Builder) -> DataFusionResult<ArrayRef>;
+
+    /// Convert a single value to a scalar
+    fn scalar(value: Option<Self::Item>) -> ScalarValue;
+}
+
+pub fn invoke<R: InvokeResult>(
+    args: &[ColumnarValue],
+    jiter_find: impl Fn(Option<&str>, &[JsonPath]) -> Result<R::Item, GetError>,
+) -> DataFusionResult<ColumnarValue> {
+    let Some((json_arg, path_args)) = args.split_first() else {
+        return exec_err!("expected at least one argument");
+    };
+
+    let path = JsonPathArgs::extract_path(path_args)?;
+    match (json_arg, path) {
+        (ColumnarValue::Array(json_array), JsonPathArgs::Array(path_array)) => {
+            invoke_array_array::<R>(json_array, path_array, jiter_find).map(ColumnarValue::Array)
+        }
+        (ColumnarValue::Array(json_array), JsonPathArgs::Scalars(path)) => {
+            invoke_array_scalars::<R>(json_array, &path, &mut |json, path, builder| {
+                R::append_value(builder, jiter_find(json, path).ok());
+            })
+            .map(ColumnarValue::Array)
+        }
+        (ColumnarValue::Scalar(s), JsonPathArgs::Array(path_array)) => {
+            invoke_scalar_array::<R>(s, path_array, jiter_find)
+        }
+        (ColumnarValue::Scalar(s), JsonPathArgs::Scalars(path)) => {
+            invoke_scalar_scalars::<R>(s, &path, jiter_find)
+        }
+    }
+}
+
+fn null_result<R: InvokeResult>(len: usize) -> DataFusionResult<ArrayRef> {
+    let mut builder = R::builder(len);
+    for _ in 0..len {
+        R::append_value(&mut builder, None);
+    }
+    R::finish(builder)
+}
+
+fn invoke_array_array<R: InvokeResult>(
+    json_array: &ArrayRef,
+    path_array: &ArrayRef,
+    jiter_find: impl Fn(Option<&str>, &[JsonPath]) -> Result<R::Item, GetError>,
+) -> DataFusionResult<ArrayRef> {
+    match json_array.data_type() {
+        // for string dictionaries, cast dictionary keys to larger types to avoid generic explosion
+        DataType::Dictionary(_, value_type) if value_type.as_ref() == &DataType::Utf8 => {
+            let json_array = cast_to_large_dictionary(json_array.as_any_dictionary())?;
+            let output = zip_apply::<R>(
+                json_array.downcast_dict::<StringArray>().unwrap(),
+                path_array,
+                jiter_find,
+            )?;
+            if R::ACCEPT_DICT_RETURN {
+                // ensure return is a dictionary to satisfy the declaration above in return_type_check
+                Ok(Arc::new(wrap_as_large_dictionary(output)))
+            } else {
+                Ok(output)
+            }
+        }
+        DataType::Dictionary(_, value_type) if value_type.as_ref() == &DataType::LargeUtf8 => {
+            let json_array = cast_to_large_dictionary(json_array.as_any_dictionary())?;
+            let output = zip_apply::<R>(
+                json_array.downcast_dict::<LargeStringArray>().unwrap(),
+                path_array,
+                jiter_find,
+            )?;
+            if R::ACCEPT_DICT_RETURN {
+                // ensure return is a dictionary to satisfy the declaration above in return_type_check
+                Ok(Arc::new(wrap_as_large_dictionary(output)))
+            } else {
+                Ok(output)
+            }
+        }
+        DataType::Dictionary(_, value_type) if value_type.as_ref() == &DataType::Utf8View => {
+            let json_array = cast_to_large_dictionary(json_array.as_any_dictionary())?;
+            let output = zip_apply::<R>(
+                json_array.downcast_dict::<StringViewArray>().unwrap(),
+                path_array,
+                jiter_find,
+            )?;
+            if R::ACCEPT_DICT_RETURN {
+                // ensure return is a dictionary to satisfy the declaration above in return_type_check
+                Ok(Arc::new(wrap_as_large_dictionary(output)))
+            } else {
+                Ok(output)
+            }
+        }
+        other_dict_type @ DataType::Dictionary(_, _) => {
+            // Horrible case: dict containing union as input with array for paths, figure
+            // out from the path type which union members we should access, repack the
+            // dictionary and then recurse.
+            if let Some(child_array) = nested_json_array_ref(
+                json_array.as_any_dictionary().values(),
+                is_object_lookup_array(path_array.data_type()),
+            ) {
+                invoke_array_array::<R>(
+                    &(Arc::new(
+                        json_array
+                            .as_any_dictionary()
+                            .with_values(child_array.clone()),
+                    ) as _),
+                    path_array,
+                    jiter_find,
+                )
+            } else {
+                exec_err!("unexpected json array type {:?}", other_dict_type)
+            }
+        }
+        DataType::Utf8 => zip_apply::<R>(json_array.as_string::<i32>(), path_array, jiter_find),
+        DataType::LargeUtf8 => {
+            zip_apply::<R>(json_array.as_string::<i64>(), path_array, jiter_find)
+        }
+        DataType::Utf8View => zip_apply::<R>(json_array.as_string_view(), path_array, jiter_find),
+        DataType::Null => null_result::<R>(json_array.len()),
+        other => {
+            if let Some(string_array) =
+                nested_json_array(json_array, is_object_lookup_array(path_array.data_type()))
+            {
+                zip_apply::<R>(string_array, path_array, jiter_find)
+            } else {
+                exec_err!("unexpected json array type {:?}", other)
+            }
+        }
+    }
+}
+
+/// Transform keys that may be pointing to values with nulls to nulls themselves.
+/// keys = `[0, 1, 2, 3]`, values = `[null, "a", null, "b"]`
+/// into
+/// keys = `[null, 0, null, 1]`, values = `["a", "b"]`
+///
+/// Arrow / `DataFusion` assumes that dictionary values do not contain nulls, nulls are encoded by the keys.
+/// Not following this invariant causes invalid dictionary arrays to be built later on inside of `DataFusion`
+/// when arrays are concacted and such.
+fn remap_dictionary_key_nulls(
+    keys: PrimitiveArray<Int64Type>,
+    values: ArrayRef,
+) -> DictionaryArray<Int64Type> {
+    // fast path: no nulls in values
+    if values.null_count() == 0 {
+        return DictionaryArray::new(keys, values);
+    }
+
+    let mut new_keys_builder = PrimitiveBuilder::<Int64Type>::new();
+
+    for key in &keys {
+        match key {
+            Some(k) if values.is_null(k.as_usize()) => new_keys_builder.append_null(),
+            Some(k) => new_keys_builder.append_value(k),
+            None => new_keys_builder.append_null(),
+        }
+    }
+
+    let new_keys = new_keys_builder.finish();
+    DictionaryArray::new(new_keys, values)
+}
+
+/// Build the result for a JSON array and a scalar path; `append` writes one row into the builder.
+///
+/// A dictionary array is processed once per distinct value, and a JSON union once over the member
+/// the path's first step selects.
+fn invoke_array_scalars<R: InvokeResult>(
+    json_array: &ArrayRef,
+    path: &[JsonPath],
+    append: &mut impl FnMut(Option<&str>, &[JsonPath], &mut R::Builder),
+) -> DataFusionResult<ArrayRef> {
+    #[allow(clippy::needless_pass_by_value)] // ArrayAccessor is implemented on references
+    fn inner<'j, R: InvokeResult>(
+        json_array: impl ArrayAccessor<Item = &'j str>,
+        path: &[JsonPath],
+        append: &mut impl FnMut(Option<&str>, &[JsonPath], &mut R::Builder),
+    ) -> DataFusionResult<ArrayRef> {
+        let mut builder = R::builder(json_array.len());
+        for i in 0..json_array.len() {
+            let opt_json = (!json_array.is_null(i)).then(|| json_array.value(i));
+            append(opt_json, path, &mut builder);
+        }
+        R::finish(builder)
+    }
+
+    match json_array.data_type() {
+        DataType::Dictionary(_, _) => {
+            let json_array = json_array.as_any_dictionary();
+            let values = invoke_array_scalars::<R>(json_array.values(), path, append)?;
+            return if R::ACCEPT_DICT_RETURN {
+                // make the keys into i64 to avoid generic bloat here
+                let mut keys: PrimitiveArray<Int64Type> =
+                    downcast_array(&cast(json_array.keys(), &DataType::Int64)?);
+                if is_json_union(values.data_type()) {
+                    // JSON union: post-process the array to set keys to null where the union member is null
+                    let type_ids = values.as_union().type_ids();
+                    keys = mask_dictionary_keys(&keys, type_ids);
+                }
+                Ok(Arc::new(remap_dictionary_key_nulls(keys, values)))
+            } else {
+                // this is what cast would do under the hood to unpack a dictionary into an array of its values
+                Ok(take(&values, json_array.keys(), None)?)
+            };
+        }
+        DataType::Utf8 => inner::<R>(json_array.as_string::<i32>(), path, append),
+        DataType::LargeUtf8 => inner::<R>(json_array.as_string::<i64>(), path, append),
+        DataType::Utf8View => inner::<R>(json_array.as_string_view(), path, append),
+        DataType::Null => null_result::<R>(json_array.len()),
+        other => {
+            if let Some(string_array) = nested_json_array(json_array, is_object_lookup(path)) {
+                inner::<R>(string_array, path, append)
+            } else {
+                exec_err!("unexpected json array type {:?}", other)
+            }
+        }
+    }
+}
+
+/// Write results straight into the Arrow builder for a JSON array argument with scalar paths.
+///
+/// `invoke` serves that shape through an owned value per row; this takes an `append` that borrows
+/// from the row instead. Any other argument shape returns `None` for the caller to pass to `invoke`.
+pub(crate) fn invoke_array_scalars_direct<R: InvokeResult>(
+    args: &[ColumnarValue],
+    mut append: impl FnMut(Option<&str>, &[JsonPath], &mut R::Builder),
+) -> DataFusionResult<Option<ColumnarValue>> {
+    let Some((ColumnarValue::Array(json_array), path_args)) = args.split_first() else {
+        return Ok(None);
+    };
+    let JsonPathArgs::Scalars(path) = JsonPathArgs::extract_path(path_args)? else {
+        return Ok(None);
+    };
+    let array = invoke_array_scalars::<R>(json_array, &path, &mut append)?;
+    Ok(Some(ColumnarValue::Array(array)))
+}
+
+fn invoke_scalar_array<R: InvokeResult>(
+    scalar: &ScalarValue,
+    path_array: &ArrayRef,
+    jiter_find: impl Fn(Option<&str>, &[JsonPath]) -> Result<R::Item, GetError>,
+) -> DataFusionResult<ColumnarValue> {
+    let s = extract_json_scalar(scalar)?;
+    let arr = s.map_or_else(
+        || StringArray::new_null(1),
+        |s| StringArray::new_scalar(s).into_inner(),
+    );
+
+    // TODO: possible optimization here if path_array is a dictionary; can apply against the
+    // dictionary values directly for less work
+    let output = zip_apply::<R>(
+        RunArray::try_new(
+            &PrimitiveArray::<Int64Type>::new_scalar(
+                i64::try_from(path_array.len()).expect("len out of i64 range"),
+            )
+            .into_inner(),
+            &arr,
+        )?
+        .downcast::<StringArray>()
+        .expect("type known"),
+        path_array,
+        jiter_find,
+    )?;
+    if returns_dictionary::<R>(&scalar.data_type()) {
+        // ensure return is a dictionary to satisfy the declaration in return_type_check
+        Ok(ColumnarValue::Array(Arc::new(wrap_as_large_dictionary(
+            output,
+        ))))
+    } else {
+        Ok(ColumnarValue::Array(output))
+    }
+}
+
+fn invoke_scalar_scalars<R: InvokeResult>(
+    scalar: &ScalarValue,
+    path: &[JsonPath],
+    jiter_find: impl Fn(Option<&str>, &[JsonPath]) -> Result<R::Item, GetError>,
+) -> DataFusionResult<ColumnarValue> {
+    let s = extract_json_scalar(scalar)?;
+    let value = R::scalar(jiter_find(s, path).ok());
+    if returns_dictionary::<R>(&scalar.data_type()) {
+        // ensure return is a dictionary to satisfy the declaration in return_type_check; a null
+        // value expands to null keys, as the array paths build
+        Ok(ColumnarValue::Scalar(ScalarValue::Dictionary(
+            Box::new(DataType::Int64),
+            Box::new(value),
+        )))
+    } else {
+        Ok(ColumnarValue::Scalar(value))
+    }
+}
+
+fn zip_apply<'a, R: InvokeResult>(
+    json_array: impl ArrayAccessor<Item = &'a str>,
+    path_array: &ArrayRef,
+    jiter_find: impl Fn(Option<&'a str>, &[JsonPath]) -> Result<R::Item, GetError>,
+) -> DataFusionResult<ArrayRef> {
+    fn get_array_values<'j, 'p, P: Into<JsonPath<'p>>>(
+        j: &impl ArrayAccessor<Item = &'j str>,
+        p: &impl ArrayAccessor<Item = P>,
+        index: usize,
+    ) -> Option<(Option<&'j str>, JsonPath<'p>)> {
+        let path = if p.is_null(index) {
+            return None;
+        } else {
+            p.value(index).into()
+        };
+
+        let json = if j.is_null(index) {
+            None
+        } else {
+            Some(j.value(index))
+        };
+
+        Some((json, path))
+    }
+
+    #[allow(clippy::needless_pass_by_value)] // ArrayAccessor is implemented on references
+    fn inner<'a, 'p, P: Into<JsonPath<'p>>, R: InvokeResult>(
+        json_array: impl ArrayAccessor<Item = &'a str>,
+        path_array: impl ArrayAccessor<Item = P>,
+        jiter_find: impl Fn(Option<&'a str>, &[JsonPath]) -> Result<R::Item, GetError>,
+    ) -> DataFusionResult<ArrayRef> {
+        let mut builder = R::builder(json_array.len());
+        for i in 0..json_array.len() {
+            if let Some((opt_json, path)) = get_array_values(&json_array, &path_array, i) {
+                let value = jiter_find(opt_json, &[path]).ok();
+                R::append_value(&mut builder, value);
+            } else {
+                R::append_value(&mut builder, None);
+            }
+        }
+        R::finish(builder)
+    }
+
+    match path_array.data_type() {
+        // for string dictionaries, cast dictionary keys to larger types to avoid generic explosion
+        DataType::Dictionary(_, value_type) if value_type.as_ref() == &DataType::Utf8 => {
+            let path_array = cast_to_large_dictionary(path_array.as_any_dictionary())?;
+            inner::<_, R>(
+                json_array,
+                path_array.downcast_dict::<StringArray>().unwrap(),
+                jiter_find,
+            )
+        }
+        DataType::Dictionary(_, value_type) if value_type.as_ref() == &DataType::LargeUtf8 => {
+            let path_array = cast_to_large_dictionary(path_array.as_any_dictionary())?;
+            inner::<_, R>(
+                json_array,
+                path_array.downcast_dict::<LargeStringArray>().unwrap(),
+                jiter_find,
+            )
+        }
+        DataType::Dictionary(_, value_type) if value_type.as_ref() == &DataType::Utf8View => {
+            let path_array = cast_to_large_dictionary(path_array.as_any_dictionary())?;
+            inner::<_, R>(
+                json_array,
+                path_array.downcast_dict::<StringViewArray>().unwrap(),
+                jiter_find,
+            )
+        }
+        // for integer dictionaries, cast them directly to the inner type because it basically costs
+        // the same as building a new key array anyway
+        DataType::Dictionary(_, value_type) if value_type.as_ref() == &DataType::Int64 => {
+            inner::<_, R>(
+                json_array,
+                cast(path_array, &DataType::Int64)?.as_primitive::<Int64Type>(),
+                jiter_find,
+            )
+        }
+        DataType::Dictionary(_, value_type) if value_type.as_ref() == &DataType::UInt64 => {
+            inner::<_, R>(
+                json_array,
+                cast(path_array, &DataType::UInt64)?.as_primitive::<UInt64Type>(),
+                jiter_find,
+            )
+        }
+        // for basic types, just consume directly
+        DataType::Utf8 => inner::<_, R>(json_array, path_array.as_string::<i32>(), jiter_find),
+        DataType::LargeUtf8 => inner::<_, R>(json_array, path_array.as_string::<i64>(), jiter_find),
+        DataType::Utf8View => inner::<_, R>(json_array, path_array.as_string_view(), jiter_find),
+        DataType::Int64 => inner::<_, R>(
+            json_array,
+            path_array.as_primitive::<Int64Type>(),
+            jiter_find,
+        ),
+        DataType::UInt64 => inner::<_, R>(
+            json_array,
+            path_array.as_primitive::<UInt64Type>(),
+            jiter_find,
+        ),
+        other => {
+            exec_err!(
+                "unexpected second argument type, expected string or int array, got {:?}",
+                other
+            )
+        }
+    }
+}
+
+fn extract_json_scalar(scalar: &ScalarValue) -> DataFusionResult<Option<&str>> {
+    match scalar {
+        ScalarValue::Dictionary(_, b) => extract_json_scalar(b.as_ref()),
+        ScalarValue::Utf8(s) | ScalarValue::Utf8View(s) | ScalarValue::LargeUtf8(s) => {
+            Ok(s.as_deref())
+        }
+        ScalarValue::Union(type_id_value, union_fields, _) => {
+            Ok(json_from_union_scalar(type_id_value.as_ref(), union_fields))
+        }
+        _ => {
+            exec_err!("unexpected first argument type, expected string or JSON union")
+        }
+    }
+}
+
+fn is_object_lookup(path: &[JsonPath]) -> bool {
+    if let Some(first) = path.first() {
+        matches!(first, JsonPath::Key(_))
+    } else {
+        false
+    }
+}
+
+fn is_object_lookup_array(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Dictionary(_, value_type) => is_object_lookup_array(value_type),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => true,
+        _ => false,
+    }
+}
+
+/// Cast an array to a dictionary with i64 indices.
+///
+/// According to <https://arrow.apache.org/docs/format/Columnar.html#dictionary-encoded-layout> the
+/// recommendation is to avoid unsigned indices due to technologies like the JVM making it harder to
+/// support unsigned integers.
+///
+/// So we'll just use i64 as the largest signed integer type.
+fn cast_to_large_dictionary(
+    dict_array: &dyn AnyDictionaryArray,
+) -> DataFusionResult<DictionaryArray<Int64Type>> {
+    let keys = downcast_array(&cast(dict_array.keys(), &DataType::Int64)?);
+    Ok(DictionaryArray::<Int64Type>::new(
+        keys,
+        dict_array.values().clone(),
+    ))
+}
+
+/// Wrap an array as a dictionary with i64 indices, one key per row, with every null row a null key
+/// (see [`remap_dictionary_key_nulls`]).
+fn wrap_as_large_dictionary(new_values: ArrayRef) -> DictionaryArray<Int64Type> {
+    let mut keys = PrimitiveArray::from_iter_values(
+        0i64..new_values.len().try_into().expect("keys out of i64 range"),
+    );
+    if is_json_union(new_values.data_type()) {
+        // JSON union: post-process the array to set keys to null where the union member is null
+        let type_ids = new_values.as_union().type_ids();
+        keys = mask_dictionary_keys(&keys, type_ids);
+    }
+    remap_dictionary_key_nulls(keys, new_values)
+}
+
+/// Skip the value `jiter` is positioned at and return its raw text as a slice of `json`, the
+/// string `jiter` was built from.
+///
+/// jiter stops on ASCII bytes, so the byte range is on char boundaries and the slice needs no
+/// UTF-8 pass over the value.
+pub(crate) fn jiter_skip_str<'j>(
+    json: &'j str,
+    jiter: &mut Jiter<'j>,
+    peek: Peek,
+) -> Result<&'j str, GetError> {
+    let start = jiter.current_index();
+    jiter.known_skip(peek)?;
+    json.get(start..jiter.current_index()).ok_or(GetError)
+}
+
+pub fn jiter_json_find<'j>(
+    opt_json: Option<&'j str>,
+    path: &[JsonPath],
+) -> Option<(Jiter<'j>, Peek)> {
+    let json_str = opt_json?;
+    let mut jiter = Jiter::new(json_str.as_bytes());
+    let mut peek = jiter.peek().ok()?;
+    for element in path {
+        match (element, peek) {
+            (JsonPath::Key(key), Peek::Object) => {
+                let mut next_key = jiter.known_object().ok()??;
+
+                while next_key != *key {
+                    jiter.next_skip().ok()?;
+                    next_key = jiter.next_key().ok()??;
+                }
+
+                peek = jiter.peek().ok()?;
+            }
+            (JsonPath::Index(index), Peek::Array) => peek = jiter_array_step(&mut jiter, *index)?,
+            // as in postgres's path operators, a text element which reaches an array is
+            // used as an index if it spells one, e.g. `j #> '{a,0}'`
+            (JsonPath::Key(key), Peek::Array) => {
+                peek = jiter_array_step(&mut jiter, key.parse().ok()?)?
+            }
+            _ => return None,
+        }
+    }
+    Some((jiter, peek))
+}
+
+/// Step into the array `jiter` is positioned at and advance to element `index`.
+///
+/// A negative index counts from the end. jiter only streams forward, so that case first
+/// counts the elements on a clone of the parser; a non-negative index is a single pass.
+fn jiter_array_step(jiter: &mut Jiter, index: isize) -> Option<Peek> {
+    let index = if let Ok(index) = usize::try_from(index) {
+        index
+    } else {
+        let len = jiter_array_len(&mut jiter.clone()).ok()?;
+        len.checked_add_signed(index)?
+    };
+
+    let mut array_item = jiter.known_array().ok()??;
+
+    for _ in 0..index {
+        jiter.known_skip(array_item).ok()?;
+        array_item = jiter.array_step().ok()??;
+    }
+
+    Some(array_item)
+}
+
+/// Count the elements of the array `jiter` is positioned at, consuming it.
+pub(crate) fn jiter_array_len(jiter: &mut Jiter) -> Result<usize, JiterError> {
+    let mut peek_opt = jiter.known_array()?;
+    let mut len = 0;
+    while let Some(peek) = peek_opt {
+        jiter.known_skip(peek)?;
+        len += 1;
+        peek_opt = jiter.array_step()?;
+    }
+    Ok(len)
+}
+
+macro_rules! get_err {
+    () => {
+        Err(GetError)
+    };
+}
+pub(crate) use get_err;
+
+pub struct GetError;
+
+impl From<JiterError> for GetError {
+    fn from(_: JiterError) -> Self {
+        GetError
+    }
+}
+
+/// Set keys to null where the union member is null.
+///
+/// This is a workaround to <https://github.com/apache/arrow-rs/issues/6017#issuecomment-2352756753>
+/// - i.e. that dictionary null is most reliably done if the keys are null.
+///
+/// That said, doing this might also be an optimization for cases like null-checking without needing
+/// to check the value union array.
+fn mask_dictionary_keys(
+    keys: &PrimitiveArray<Int64Type>,
+    type_ids: &[i8],
+) -> PrimitiveArray<Int64Type> {
+    let mut null_mask = vec![true; keys.len()];
+    for (i, k) in keys.iter().enumerate() {
+        match k {
+            // if the key is non-null and value is non-null, don't mask it out
+            Some(k) if type_ids[k.as_usize()] != TYPE_ID_NULL => {}
+            // i.e. key is null or value is null here
+            _ => null_mask[i] = false,
+        }
+    }
+    PrimitiveArray::new(keys.values().clone(), Some(null_mask.into()))
+}
+
+#[cfg(test)]
+pub(crate) mod test_util {
+    use super::*;
+    use datafusion::arrow::array::{LargeStringArray, StringViewArray};
+
+    /// `rows` as each string encoding `invoke_array_scalars_direct` handles.
+    pub(crate) fn string_arrays(rows: &[Option<&str>]) -> Vec<ArrayRef> {
+        let utf8: ArrayRef = Arc::new(StringArray::from_iter(rows.iter().copied()));
+        let dict_type = DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8));
+        vec![
+            utf8.clone(),
+            Arc::new(LargeStringArray::from_iter(rows.iter().copied())),
+            Arc::new(StringViewArray::from_iter(rows.iter().copied())),
+            cast(&utf8, &dict_type).unwrap(),
+        ]
+    }
+
+    /// Check the direct path and `invoke` build equal arrays for every encoding of `rows` and
+    /// every path in `paths`.
+    pub(crate) fn assert_direct_matches_owned<R: InvokeResult>(
+        rows: &[Option<&str>],
+        paths: &[Vec<ScalarValue>],
+        mut append: impl FnMut(Option<&str>, &[JsonPath], &mut R::Builder),
+        jiter_find: impl Fn(Option<&str>, &[JsonPath]) -> Result<R::Item, GetError>,
+    ) {
+        for array in string_arrays(rows) {
+            for path in paths {
+                let mut args = vec![ColumnarValue::Array(array.clone())];
+                args.extend(path.iter().cloned().map(ColumnarValue::Scalar));
+                let direct = invoke_array_scalars_direct::<R>(&args, &mut append)
+                    .unwrap()
+                    .unwrap();
+                let owned = invoke::<R>(&args, &jiter_find).unwrap();
+                let (ColumnarValue::Array(direct), ColumnarValue::Array(owned)) = (direct, owned)
+                else {
+                    panic!("array input must produce array output");
+                };
+                assert_eq!(direct.data_type(), owned.data_type(), "path={path:?}");
+                assert_eq!(direct.as_ref(), owned.as_ref(), "path={path:?}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::arrow::array::ListArray;
+
+    #[test]
+    fn into_owned_keeps_non_key_steps() {
+        assert!(matches!(
+            JsonPath::Index(-1).into_owned(),
+            JsonPath::Index(-1)
+        ));
+        assert!(matches!(JsonPath::None.into_owned(), JsonPath::None));
+        assert!(
+            matches!(JsonPath::from("a").into_owned(), JsonPath::Key(Cow::Owned(k)) if k == "a")
+        );
+    }
+
+    #[test]
+    fn list_path_must_be_scalar() {
+        // two rows, `[[1], [2]]`, where a scalar list has one
+        let two_rows =
+            ListArray::from_iter_primitive::<Int64Type, _, _>([Some([Some(1)]), Some([Some(2)])]);
+        let args = [ColumnarValue::Scalar(ScalarValue::List(Arc::new(two_rows)))];
+        // a single array argument is a column of keys and takes the other path, so add a key
+        let args_with_key = [
+            args[0].clone(),
+            ColumnarValue::Scalar(ScalarValue::from("k")),
+        ];
+        let err = JsonPathArgs::extract_path(&args_with_key).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Execution error: Expected a scalar list as a JSON path, got 2 rows."
+        );
+    }
+}

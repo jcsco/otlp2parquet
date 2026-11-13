@@ -198,6 +198,24 @@ print({f.name: str(shredded.field(f.name).field("typed_value").type) for f in sh
 
 Or run the bundled check against a directory of output: `make check-datafusion DIR=./data/traces COLUMN=span_attributes KEY=http.route`. The tool also reads `s3://bucket/prefix` locations, using the `AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` environment variables, which suits any S3-compatible store.
 
+## Benchmark
+
+`make bench-variant` (options `SPANS=1000000 RUNS=5`) writes the same synthetic traces three ways (JSON strings, VARIANT, VARIANT with `http.route`, `http.request.method` and `http.response.status_code` shredded) and times the same DataFusion queries on each. It checks that all three return identical results. Code: [`examples/variant-bench`](https://github.com/smithclay/otlp2parquet/tree/main/examples/variant-bench).
+
+One sample run (1M spans with 14 attributes each, one merged Parquet file per layout, local disk, 8 cores, DataFusion 56 with `datafusion-variant` and `datafusion-functions-json` for the string baseline, median of 7 runs):
+
+| Query | JSON strings | VARIANT | Shredded |
+|---|---:|---:|---:|
+| Filter on shredded keys | 79 ms | 38 ms | 19 ms |
+| Group by shredded key | 80 ms | 58 ms | 28 ms |
+| Error rate by route | 84 ms | 60 ms | 21 ms |
+| Filter on an unshredded key | 42 ms | 37 ms | 32 ms |
+| Group by an unshredded key | 31 ms | 40 ms | 36 ms |
+| No attribute access | 5.7 ms | 5.8 ms | 5.7 ms |
+| File size | 65.8 MiB | 63.5 MiB | 58.9 MiB |
+
+Queries on shredded keys were about 3 to 4 times faster than on JSON strings here, while unshredded keys were about the same or slightly slower. This is one synthetic data set on one machine, so treat it as a method rather than a promise: shredding pays off when your queries filter or group on the shredded keys, and results depend on your data, engine and version. The small files otlp2parquet writes per request are merged first (same settings for all three layouts), because per-file overhead would otherwise dominate the timings.
+
 ## Things to keep in mind
 
 - **Changing the shred config changes the layout of new files only.** Older files keep their old layout. Query engines that reconcile different layouts (see the notes in [Query Data](querying.md#apache-datafusion-variant-columns)) handle this; others may need you to query old and new ranges separately.

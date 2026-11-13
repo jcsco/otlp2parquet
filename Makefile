@@ -74,6 +74,10 @@ build-cli: ## Build CLI binary in release mode
 	@cargo build --release --bin otlp2parquet
 	@echo "==> Binary available at: target/release/otlp2parquet"
 
+.PHONY: bench-variant
+bench-variant: build-cli-variant ## Benchmark DataFusion queries: JSON strings vs VARIANT vs shredded (SPANS=1000000 RUNS=5)
+	@examples/variant-bench/scripts/run.sh $(or $(SPANS),1000000) $(or $(RUNS),5)
+
 .PHONY: build-cli-variant
 build-cli-variant: ## Build CLI binary in release mode with Parquet VARIANT output
 	@echo "==> Building otlp2parquet CLI binary (variant)..."
