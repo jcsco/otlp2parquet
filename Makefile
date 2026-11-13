@@ -45,9 +45,10 @@ test-verbose: ## Run tests with verbose output
 
 # Read VARIANT output with DataFusion + datafusion-variant (separate crate)
 # Usage: make check-datafusion DIR=./data/traces COLUMN=span_attributes KEY=http.method
+#        (DIR may also be an s3://bucket/prefix URL; set AWS_ENDPOINT_URL and AWS_* credentials)
 .PHONY: check-datafusion
 check-datafusion: ## Query VARIANT Parquet output via DataFusion (DIR, COLUMN, KEY)
-	@cd examples/datafusion-variant-check && cargo run --release -- "$(abspath $(DIR))" "$(COLUMN)" "$(KEY)"
+	@cd examples/datafusion-variant-check && cargo run --release -- "$(if $(filter s3://%,$(DIR)),$(DIR),$(abspath $(DIR)))" "$(COLUMN)" "$(KEY)"
 
 #
 # Build Commands by Feature

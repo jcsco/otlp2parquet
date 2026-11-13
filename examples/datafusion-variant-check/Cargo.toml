@@ -19,3 +19,7 @@ datafusion-variant = { git = "https://github.com/datafusion-contrib/datafusion-v
 # which datafusion-variant's `variant_get` requires.
 parquet = { version = "60", features = ["variant_experimental"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Reads `s3://` locations (e.g. MinIO). Credentials/endpoint come from the AWS_* env vars.
+object_store = { version = "0.14", default-features = false, features = ["aws", "fs"] }
+url = "2"
+futures = "0.3"
