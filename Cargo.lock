@@ -235,6 +235,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de2c8e714b466404cdc1189e89f892426efea614d938e16c15518c340cd43ba3"
 dependencies = [
  "bitflags",
+ "serde_core",
+ "serde_json",
 ]
 
 [[package]]
@@ -1799,6 +1801,9 @@ dependencies = [
  "opendal-http-transport-reqwest",
  "otlp2records",
  "parking_lot",
+ "parquet",
+ "parquet-variant",
+ "parquet-variant-compute",
  "paste",
  "reqwest 0.12.28",
  "rustls",
@@ -1890,8 +1895,56 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
+ "parquet-variant",
+ "parquet-variant-compute",
  "seq-macro",
  "twox-hash",
+]
+
+[[package]]
+name = "parquet-variant"
+version = "60.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cd190b833203e27e585c1f07e6ab1abbf353336688202ce036ecd8b7bc18259"
+dependencies = [
+ "arrow-schema",
+ "chrono",
+ "half",
+ "indexmap",
+ "simdutf8",
+ "uuid",
+]
+
+[[package]]
+name = "parquet-variant-compute"
+version = "60.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca43d38e0b3f91d177150fc72c86af888dcbd3c3d93888c2a2fbc95721200d89"
+dependencies = [
+ "arrow",
+ "arrow-schema",
+ "chrono",
+ "half",
+ "indexmap",
+ "num-traits",
+ "parquet-variant",
+ "parquet-variant-json",
+ "uuid",
+]
+
+[[package]]
+name = "parquet-variant-json"
+version = "60.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dadd517b64ce5b9a7160130f6ded8eed81a20ef8cec8e3e2458165f5195701ec"
+dependencies = [
+ "arrow-schema",
+ "base64 0.23.1",
+ "chrono",
+ "parquet-variant",
+ "ryu",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

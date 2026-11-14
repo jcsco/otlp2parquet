@@ -1,0 +1,297 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "checkout"
+            }
+          },
+          {
+            "key": "service.namespace",
+            "value": {
+              "stringValue": "shop"
+            }
+          },
+          {
+            "key": "deployment.environment",
+            "value": {
+              "stringValue": "demo"
+            }
+          },
+          {
+            "key": "host.name",
+            "value": {
+              "stringValue": "demo-host-1"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "variant-demo"
+          },
+          "metrics": [
+            {
+              "name": "system.cpu.utilization",
+              "unit": "1",
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "__END__",
+                    "asDouble": 0.62,
+                    "attributes": [
+                      {
+                        "key": "host",
+                        "value": {
+                          "stringValue": "demo-host-1"
+                        }
+                      },
+                      {
+                        "key": "cpu",
+                        "value": {
+                          "intValue": "0"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "timeUnixNano": "__END__",
+                    "asDouble": 0.18,
+                    "attributes": [
+                      {
+                        "key": "host",
+                        "value": {
+                          "stringValue": "demo-host-1"
+                        }
+                      },
+                      {
+                        "key": "cpu",
+                        "value": {
+                          "intValue": "1"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "timeUnixNano": "__END__",
+                    "asDouble": 0.41,
+                    "attributes": [
+                      {
+                        "key": "host",
+                        "value": {
+                          "stringValue": "demo-host-1"
+                        }
+                      },
+                      {
+                        "key": "cpu",
+                        "value": {
+                          "intValue": "2"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "http.server.request.count",
+              "unit": "{request}",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "__START__",
+                    "timeUnixNano": "__END__",
+                    "asInt": "420",
+                    "attributes": [
+                      {
+                        "key": "http.route",
+                        "value": {
+                          "stringValue": "/api/cart"
+                        }
+                      },
+                      {
+                        "key": "http.response.status_code",
+                        "value": {
+                          "intValue": "200"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "__START__",
+                    "timeUnixNano": "__END__",
+                    "asInt": "6",
+                    "attributes": [
+                      {
+                        "key": "http.route",
+                        "value": {
+                          "stringValue": "/api/cart"
+                        }
+                      },
+                      {
+                        "key": "http.response.status_code",
+                        "value": {
+                          "intValue": "503"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "__START__",
+                    "timeUnixNano": "__END__",
+                    "asInt": "97",
+                    "attributes": [
+                      {
+                        "key": "http.route",
+                        "value": {
+                          "stringValue": "/api/checkout"
+                        }
+                      },
+                      {
+                        "key": "http.response.status_code",
+                        "value": {
+                          "intValue": "200"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "__START__",
+                    "timeUnixNano": "__END__",
+                    "asInt": "4",
+                    "attributes": [
+                      {
+                        "key": "http.route",
+                        "value": {
+                          "stringValue": "/api/checkout"
+                        }
+                      },
+                      {
+                        "key": "http.response.status_code",
+                        "value": {
+                          "intValue": "500"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "__START__",
+                    "timeUnixNano": "__END__",
+                    "asInt": "11",
+                    "attributes": [
+                      {
+                        "key": "http.route",
+                        "value": {
+                          "stringValue": "/api/products/{id}"
+                        }
+                      },
+                      {
+                        "key": "http.response.status_code",
+                        "value": {
+                          "intValue": "404"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "http.server.request.duration",
+              "unit": "ms",
+              "histogram": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "__START__",
+                    "timeUnixNano": "__END__",
+                    "count": "420",
+                    "sum": 4300.5,
+                    "bucketCounts": [
+                      "120",
+                      "200",
+                      "80",
+                      "15",
+                      "4",
+                      "1",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      5,
+                      10,
+                      25,
+                      50,
+                      100,
+                      250,
+                      500
+                    ],
+                    "attributes": [
+                      {
+                        "key": "http.route",
+                        "value": {
+                          "stringValue": "/api/cart"
+                        }
+                      },
+                      {
+                        "key": "http.request.method",
+                        "value": {
+                          "stringValue": "GET"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "__START__",
+                    "timeUnixNano": "__END__",
+                    "count": "98",
+                    "sum": 6400.0,
+                    "bucketCounts": [
+                      "2",
+                      "10",
+                      "30",
+                      "40",
+                      "12",
+                      "3",
+                      "1",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      5,
+                      10,
+                      25,
+                      50,
+                      100,
+                      250,
+                      500
+                    ],
+                    "attributes": [
+                      {
+                        "key": "http.route",
+                        "value": {
+                          "stringValue": "/api/checkout"
+                        }
+                      },
+                      {
+                        "key": "http.request.method",
+                        "value": {
+                          "stringValue": "POST"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

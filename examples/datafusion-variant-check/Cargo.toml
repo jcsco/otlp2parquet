@@ -1,0 +1,25 @@
+[package]
+name = "datafusion-variant-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Reads otlp2parquet VARIANT output with DataFusion + datafusion-variant"
+
+# Standalone: not part of the main otlp2parquet build.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+# datafusion-variant 0.1.0 on crates.io is built on arrow 57 and cannot read shredded
+# VARIANT objects. `main` is on arrow/parquet 60 (matching otlp2parquet) and needs the
+# DataFusion branch-56 git branch. Cargo.lock pins the exact commits.
+datafusion = { git = "https://github.com/apache/datafusion.git", branch = "branch-56" }
+datafusion-variant = { git = "https://github.com/datafusion-contrib/datafusion-variant.git", rev = "3dbb4363bedda376fafd129e03749a475eb5757a" }
+# Makes the Parquet reader tag VARIANT groups with the Variant extension type,
+# which datafusion-variant's `variant_get` requires.
+parquet = { version = "60", features = ["variant_experimental"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Reads `s3://` locations (e.g. MinIO). Credentials/endpoint come from the AWS_* env vars.
+object_store = { version = "0.14", default-features = false, features = ["aws", "fs"] }
+url = "2"
+futures = "0.3"

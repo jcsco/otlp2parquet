@@ -46,6 +46,18 @@ pub(crate) fn init_writer(config: &RuntimeConfig) -> Result<()> {
     crate::writer::initialize_storage(config)
         .map_err(|e| anyhow::anyhow!("Failed to initialize storage: {}", e))?;
 
+    #[cfg(feature = "variant")]
+    {
+        crate::variant::initialize(&config.parquet.variant)
+            .map_err(|e| anyhow::anyhow!("Failed to initialize VARIANT output: {}", e))?;
+        if config.parquet.variant.enabled {
+            info!(
+                columns = ?config.parquet.variant.columns,
+                "Parquet VARIANT output enabled"
+            );
+        }
+    }
+
     Ok(())
 }
 

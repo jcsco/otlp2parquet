@@ -45,6 +45,12 @@ async fn write_plain_parquet(
 
     tracing::debug!("Writing plain Parquet to path: {}", file_path);
 
+    #[cfg(feature = "variant")]
+    let converted = crate::variant::apply(batch, signal_type, metric_type)
+        .map_err(|e| WriterError::write_failure(format!("Failed to convert to VARIANT: {}", e)))?;
+    #[cfg(feature = "variant")]
+    let batch = converted.as_ref().unwrap_or(batch);
+
     let parquet_bytes = to_parquet(batch).map_err(|e| {
         WriterError::write_failure(format!("Failed to encode Parquet bytes: {}", e))
     })?;

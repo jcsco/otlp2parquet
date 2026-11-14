@@ -1,0 +1,310 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "checkout"
+            }
+          },
+          {
+            "key": "service.namespace",
+            "value": {
+              "stringValue": "shop"
+            }
+          },
+          {
+            "key": "deployment.environment",
+            "value": {
+              "stringValue": "demo"
+            }
+          },
+          {
+            "key": "host.name",
+            "value": {
+              "stringValue": "demo-host-1"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "variant-demo"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "__START__",
+              "observedTimeUnixNano": "__START__",
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "body": {
+                "stringValue": "GET /api/cart served"
+              },
+              "attributes": [
+                {
+                  "key": "http.route",
+                  "value": {
+                    "stringValue": "/api/cart"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "user.tier",
+                  "value": {
+                    "stringValue": "free"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "__START__",
+              "observedTimeUnixNano": "__START__",
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "body": {
+                "kvlistValue": {
+                  "values": [
+                    {
+                      "key": "event",
+                      "value": {
+                        "stringValue": "order_placed"
+                      }
+                    },
+                    {
+                      "key": "order_id",
+                      "value": {
+                        "stringValue": "o-1001"
+                      }
+                    },
+                    {
+                      "key": "items",
+                      "value": {
+                        "intValue": "3"
+                      }
+                    }
+                  ]
+                }
+              },
+              "attributes": [
+                {
+                  "key": "http.route",
+                  "value": {
+                    "stringValue": "/api/checkout"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "user.tier",
+                  "value": {
+                    "stringValue": "pro"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "__START__",
+              "observedTimeUnixNano": "__START__",
+              "severityNumber": 17,
+              "severityText": "ERROR",
+              "body": {
+                "kvlistValue": {
+                  "values": [
+                    {
+                      "key": "event",
+                      "value": {
+                        "stringValue": "payment_failed"
+                      }
+                    },
+                    {
+                      "key": "order_id",
+                      "value": {
+                        "stringValue": "o-1002"
+                      }
+                    },
+                    {
+                      "key": "reason",
+                      "value": {
+                        "stringValue": "card_declined"
+                      }
+                    }
+                  ]
+                }
+              },
+              "attributes": [
+                {
+                  "key": "http.route",
+                  "value": {
+                    "stringValue": "/api/checkout"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "500"
+                  }
+                },
+                {
+                  "key": "user.tier",
+                  "value": {
+                    "stringValue": "pro"
+                  }
+                },
+                {
+                  "key": "error.type",
+                  "value": {
+                    "stringValue": "PaymentError"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "__START__",
+              "observedTimeUnixNano": "__START__",
+              "severityNumber": 13,
+              "severityText": "WARN",
+              "body": {
+                "stringValue": "upstream timeout calling cart-service"
+              },
+              "attributes": [
+                {
+                  "key": "http.route",
+                  "value": {
+                    "stringValue": "/api/cart"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "503"
+                  }
+                },
+                {
+                  "key": "user.tier",
+                  "value": {
+                    "stringValue": "free"
+                  }
+                },
+                {
+                  "key": "error.type",
+                  "value": {
+                    "stringValue": "Timeout"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "catalog"
+            }
+          },
+          {
+            "key": "service.namespace",
+            "value": {
+              "stringValue": "shop"
+            }
+          },
+          {
+            "key": "deployment.environment",
+            "value": {
+              "stringValue": "demo"
+            }
+          },
+          {
+            "key": "host.name",
+            "value": {
+              "stringValue": "demo-host-1"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "variant-demo"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "__START__",
+              "observedTimeUnixNano": "__START__",
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "body": {
+                "stringValue": "GET /api/products/42 served"
+              },
+              "attributes": [
+                {
+                  "key": "http.route",
+                  "value": {
+                    "stringValue": "/api/products/{id}"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "user.tier",
+                  "value": {
+                    "stringValue": "free"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "__START__",
+              "observedTimeUnixNano": "__START__",
+              "severityNumber": 13,
+              "severityText": "WARN",
+              "body": {
+                "stringValue": "product 9999 not found"
+              },
+              "attributes": [
+                {
+                  "key": "http.route",
+                  "value": {
+                    "stringValue": "/api/products/{id}"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "404"
+                  }
+                },
+                {
+                  "key": "user.tier",
+                  "value": {
+                    "stringValue": "free"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

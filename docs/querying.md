@@ -151,6 +151,33 @@ LIMIT 100;
     error_traces.select("Timestamp", "ServiceName", "Body", "SpanName", "Duration").show()
     ```
 
+### Apache DataFusion (VARIANT columns)
+
+Files written with [Parquet VARIANT output](reference.md#parquet-variant) can be queried with DataFusion and [`datafusion-variant`](https://github.com/datafusion-contrib/datafusion-variant). Use the Git version of `datafusion-variant`: the crates.io 0.1.0 release is built on arrow 57 and fails on shredded columns. `main` is on arrow/parquet 60, the same version otlp2parquet writes with.
+
+```rust
+let mut ctx = SessionContext::new();
+datafusion_variant::register_all(&mut ctx)?;
+ctx.sql("CREATE EXTERNAL TABLE traces STORED AS PARQUET LOCATION 'data/traces/cart/'").await?;
+
+// Bracket notation keeps dotted OTel keys as a single key.
+ctx.sql("SELECT variant_get(span_attributes, '$[''http.request.method'']', 'VARCHAR') AS method,
+                count(*) FROM traces GROUP BY 1").await?.show().await?;
+```
+
+Notes (as of `datafusion-variant` `3dbb436`, DataFusion `branch-56`):
+
+- Create the table with `CREATE EXTERNAL TABLE ... STORED AS PARQUET`; that reader understands shredded layouts. `read_parquet` does not.
+- `variant_get` reads shredded keys from their typed columns and other keys from the residual value, so queries do not need to know which keys were shredded.
+- `to_json` of a whole *shredded* object column is not implemented yet in that version (it fails asking for `unshred_variant`). `to_json` works on unshredded columns, and `variant_get` works on both.
+- DataFusion did not find files when `LOCATION` points at several levels of Hive-style directories (for example `data/traces/`). Point `LOCATION` at a single file or a directory holding the files, such as one `hour=` folder.
+
+More recipes: [Variant shredding examples](variant-shredding.md). A runnable check lives in `examples/datafusion-variant-check`:
+
+```bash
+make check-datafusion DIR=./data/traces COLUMN=span_attributes KEY=http.request.method
+```
+
 ## Tips
 
 **Partition pruning**: Use time-based filters to skip scanning irrelevant files:

@@ -16,6 +16,9 @@ pub fn validate_config(config: &RuntimeConfig) -> Result<()> {
     // Validate storage config
     validate_storage_config(&config.storage)?;
 
+    // Validate Parquet output options
+    config.parquet.variant.validate()?;
+
     // Validate platform-specific configs
     if let Some(ref server) = config.server {
         validate_server_config(server)?;

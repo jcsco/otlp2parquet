@@ -1,0 +1,21 @@
+[package]
+name = "variant-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Benchmarks DataFusion queries over otlp2parquet output: JSON strings vs VARIANT vs shredded VARIANT"
+
+# Standalone: not part of the main otlp2parquet build.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+datafusion = { git = "https://github.com/apache/datafusion.git", branch = "branch-56" }
+datafusion-variant = { git = "https://github.com/datafusion-contrib/datafusion-variant.git", rev = "3dbb4363bedda376fafd129e03749a475eb5757a" }
+# Vendored copy that builds against DataFusion branch-56 (see its Cargo.toml).
+datafusion-functions-json = { path = "vendor/datafusion-functions-json" }
+parquet = { version = "60", features = ["variant_experimental"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[profile.release]
+debug = false

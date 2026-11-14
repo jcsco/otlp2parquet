@@ -14,6 +14,8 @@ help: ## Show this help message
 check: ## Run cargo check on all feature combinations
 	@echo "==> Checking server..."
 	@cargo check
+	@echo "==> Checking server (variant)..."
+	@cargo check --features variant
 
 .PHONY: fmt
 fmt: ## Format all Rust code
@@ -27,15 +29,26 @@ fmt-check: ## Check Rust code formatting
 clippy: ## Run clippy on all feature combinations
 	@echo "==> Clippy server..."
 	@cargo clippy --all-targets -- -D warnings
+	@echo "==> Clippy server (variant)..."
+	@cargo clippy --all-targets --features variant -- -D warnings
 
 .PHONY: test
 test: ## Run tests for all testable feature combinations
 	@echo "==> Testing server..."
 	@cargo test
+	@echo "==> Testing server (variant)..."
+	@cargo test --features variant
 
 .PHONY: test-verbose
 test-verbose: ## Run tests with verbose output
 	@cargo test -- --nocapture
+
+# Read VARIANT output with DataFusion + datafusion-variant (separate crate)
+# Usage: make check-datafusion DIR=./data/traces COLUMN=span_attributes KEY=http.method
+#        (DIR may also be an s3://bucket/prefix URL; set AWS_ENDPOINT_URL and AWS_* credentials)
+.PHONY: check-datafusion
+check-datafusion: ## Query VARIANT Parquet output via DataFusion (DIR, COLUMN, KEY)
+	@cd examples/datafusion-variant-check && cargo run --release -- "$(if $(filter s3://%,$(DIR)),$(DIR),$(abspath $(DIR)))" "$(COLUMN)" "$(KEY)"
 
 #
 # Build Commands by Feature
@@ -59,6 +72,16 @@ build-server: ## Build server binary only (default mode)
 build-cli: ## Build CLI binary in release mode
 	@echo "==> Building otlp2parquet CLI binary..."
 	@cargo build --release --bin otlp2parquet
+	@echo "==> Binary available at: target/release/otlp2parquet"
+
+.PHONY: bench-variant
+bench-variant: build-cli-variant ## Benchmark DataFusion queries: JSON strings vs VARIANT vs shredded (SPANS=1000000 RUNS=5)
+	@examples/variant-bench/scripts/run.sh $(or $(SPANS),1000000) $(or $(RUNS),5)
+
+.PHONY: build-cli-variant
+build-cli-variant: ## Build CLI binary in release mode with Parquet VARIANT output
+	@echo "==> Building otlp2parquet CLI binary (variant)..."
+	@cargo build --release --bin otlp2parquet --features variant
 	@echo "==> Binary available at: target/release/otlp2parquet"
 
 .PHONY: install-cli

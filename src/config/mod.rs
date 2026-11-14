@@ -15,9 +15,17 @@ mod platform;
 #[cfg(not(target_arch = "wasm32"))]
 mod sources;
 mod validation;
+mod variant;
 
 pub use env_overrides::{EnvSource, ENV_PREFIX};
 pub use platform::Platform;
+pub use variant::{
+    ColumnShred, MetricsShredConfig, ParquetConfig, ShredConfig, ShredType, VariantConfig,
+};
+#[cfg(feature = "variant")]
+pub(crate) use variant::{
+    LOGS_VARIANT_COLUMNS, METRICS_VARIANT_COLUMNS, METRIC_KINDS, TRACES_VARIANT_COLUMNS,
+};
 
 /// Main runtime configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +40,9 @@ pub struct RuntimeConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server: Option<ServerConfig>,
+
+    #[serde(default)]
+    pub parquet: ParquetConfig,
 }
 
 /// Batch configuration
@@ -226,6 +237,7 @@ impl RuntimeConfig {
         self.batch = other.batch;
         self.request = other.request;
         self.storage = other.storage;
+        self.parquet = other.parquet;
 
         if other.server.is_some() {
             self.server = other.server;
@@ -326,6 +338,7 @@ fn platform_defaults(platform: Platform) -> RuntimeConfig {
         },
         storage,
         server: Some(ServerConfig::default()),
+        parquet: ParquetConfig::default(),
     }
 }
 
