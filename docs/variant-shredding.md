@@ -206,15 +206,20 @@ One sample run (1M spans with 14 attributes each, one merged Parquet file per la
 
 | Query | JSON strings | VARIANT | Shredded |
 |---|---:|---:|---:|
-| Filter on shredded keys | 79 ms | 38 ms | 19 ms |
-| Group by shredded key | 80 ms | 58 ms | 28 ms |
-| Error rate by route | 84 ms | 60 ms | 21 ms |
-| Filter on an unshredded key | 42 ms | 37 ms | 32 ms |
-| Group by an unshredded key | 31 ms | 40 ms | 36 ms |
-| No attribute access | 5.7 ms | 5.8 ms | 5.7 ms |
-| File size | 65.8 MiB | 63.5 MiB | 58.9 MiB |
+| Filter on shredded keys | 79 ms | 37 ms | 19 ms |
+| Group by shredded key | 78 ms | 56 ms | 24 ms |
+| Error rate by route | 80 ms | 59 ms | 21 ms |
+| Count distinct, shredded key | 53 ms | 38 ms | 22 ms |
+| `DISTINCT` on 3 shredded keys | 105 ms | 77 ms | 25 ms |
+| `JOIN` on a shredded key | 112 ms | 61 ms | 26 ms |
+| Filter on an unshredded key | 38 ms | 37 ms | 32 ms |
+| Group by an unshredded key | 32 ms | 41 ms | 35 ms |
+| Count distinct, unshredded key | 43 ms | 36 ms | 34 ms |
+| `JOIN` on an unshredded key | 33 ms | 41 ms | 37 ms |
+| No attribute access | 5.0 ms | 5.6 ms | 5.1 ms |
+| File size | 65.9 MiB | 63.6 MiB | 59.0 MiB |
 
-Queries on shredded keys were about 3 to 4 times faster than on JSON strings here, while unshredded keys were about the same or slightly slower. This is one synthetic data set on one machine, so treat it as a method rather than a promise: shredding pays off when your queries filter or group on the shredded keys, and results depend on your data, engine and version. The small files otlp2parquet writes per request are merged first (same settings for all three layouts), because per-file overhead would otherwise dominate the timings.
+Queries on shredded keys (filters, group by, `DISTINCT` and `JOIN` on them) were about 2.4 to 4.3 times faster than on JSON strings here, while unshredded keys were about the same or slightly slower. The `JOIN` queries join the spans to a small in-memory lookup table on the attribute value. This is one synthetic data set on one machine, so treat it as a method rather than a promise: shredding pays off when your queries filter or group on the shredded keys, and results depend on your data, engine and version. The small files otlp2parquet writes per request are merged first (same settings for all three layouts), because per-file overhead would otherwise dominate the timings.
 
 ## Things to keep in mind
 

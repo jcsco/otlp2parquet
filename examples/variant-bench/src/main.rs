@@ -124,6 +124,64 @@ fn queries() -> Vec<Query> {
                     .to_string()
             },
         },
+        Query {
+            name: "q7 count distinct shredded",
+            about: "distinct routes (count)",
+            sql: |l| {
+                format!(
+                    "SELECT count(DISTINCT {}) AS n FROM t",
+                    l.text(A, "http.route")
+                )
+            },
+        },
+        Query {
+            name: "q8 DISTINCT shredded keys",
+            about: "distinct route/method/status combinations",
+            sql: |l| {
+                format!(
+                    "SELECT DISTINCT {r} AS route, {m} AS method, {s} AS status FROM t \
+                     ORDER BY 1, 2, 3",
+                    r = l.text(A, "http.route"),
+                    m = l.text(A, "http.request.method"),
+                    s = l.int(A, "http.response.status_code")
+                )
+            },
+        },
+        Query {
+            name: "q9 count distinct UNshredded",
+            about: "distinct tenants (not shredded)",
+            sql: |l| {
+                format!(
+                    "SELECT count(DISTINCT {}) AS n FROM t",
+                    l.text(A, "app.tenant")
+                )
+            },
+        },
+        Query {
+            name: "q10 JOIN on shredded key",
+            about: "spans and errors per owning team",
+            sql: |l| {
+                format!(
+                    "SELECT o.team, count(*) AS spans, \
+                     count(*) FILTER (WHERE {s} >= 500) AS errors \
+                     FROM t JOIN route_owners o ON {r} = o.route \
+                     GROUP BY 1 ORDER BY 1",
+                    r = l.text(A, "http.route"),
+                    s = l.int(A, "http.response.status_code")
+                )
+            },
+        },
+        Query {
+            name: "q11 JOIN on UNshredded key",
+            about: "spans per cloud provider via region",
+            sql: |l| {
+                format!(
+                    "SELECT g.cloud, count(*) AS spans FROM t \
+                     JOIN regions g ON {} = g.region GROUP BY 1 ORDER BY 1",
+                    l.text(A, "app.region")
+                )
+            },
+        },
     ]
 }
 
@@ -168,6 +226,53 @@ async fn register(ctx: &SessionContext, name: &str, dir: &str) -> Result<(usize,
         .collect()
         .await?;
     Ok((files.len(), bytes))
+}
+
+/// Small in-memory lookup tables for the JOIN queries (same data in every layout).
+async fn create_dimensions(ctx: &SessionContext) -> Result<()> {
+    const TEAMS: [&str; 4] = ["storefront", "payments", "platform", "growth"];
+    const ROUTES: [&str; 20] = [
+        "cart",
+        "checkout",
+        "orders",
+        "orders/{id}",
+        "users/{id}",
+        "search",
+        "items/{id}",
+        "payments",
+        "inventory",
+        "health",
+        "login",
+        "logout",
+        "recommendations",
+        "shipping",
+        "reviews",
+        "profile",
+        "notifications",
+        "reports",
+        "export",
+        "admin",
+    ];
+    let routes = ROUTES
+        .iter()
+        .enumerate()
+        .map(|(i, r)| format!("('/api/{r}', '{}')", TEAMS[i % TEAMS.len()]))
+        .collect::<Vec<_>>()
+        .join(", ");
+    ctx.sql(&format!(
+        "CREATE TABLE route_owners AS SELECT column1 AS route, column2 AS team FROM (VALUES {routes})"
+    ))
+    .await?
+    .collect()
+    .await?;
+    ctx.sql(
+        "CREATE TABLE regions AS SELECT column1 AS region, column2 AS cloud FROM \
+         (VALUES ('us-east-1', 'aws'), ('us-west-2', 'aws'), ('eu-west-1', 'aws'))",
+    )
+    .await?
+    .collect()
+    .await?;
+    Ok(())
 }
 
 /// Runs `sql` against `t`, returning the rendered result and the timings in ms.
@@ -294,6 +399,7 @@ async fn main() -> Result<()> {
         datafusion_variant::register_all(&mut ctx)?;
         datafusion_functions_json::register_all(&mut ctx)?;
         let (files, bytes) = register(&ctx, "t", dir).await?;
+        create_dimensions(&ctx).await?;
         let rows = ctx
             .sql("SELECT count(*) FROM t")
             .await?
@@ -318,7 +424,7 @@ async fn main() -> Result<()> {
 
     println!("\nmedian ms over {runs} runs (min in parentheses); speedup is plain / shredded");
     println!(
-        "{:<28} {:>16} {:>16} {:>16} {:>8}  {}",
+        "{:<30} {:>16} {:>16} {:>16} {:>8}  {}",
         "query", "plain", "variant", "shredded", "speedup", "results"
     );
     let mut failed = false;
@@ -336,7 +442,7 @@ async fn main() -> Result<()> {
         let same = rendered.windows(2).all(|w| w[0] == w[1]);
         failed |= !same;
         println!(
-            "{:<28} {:>16} {:>16} {:>16} {:>7.1}x  {}",
+            "{:<30} {:>16} {:>16} {:>16} {:>7.1}x  {}",
             q.name,
             cells[0],
             cells[1],
@@ -344,7 +450,7 @@ async fn main() -> Result<()> {
             medians[0] / medians[2],
             if same { "identical" } else { "MISMATCH" }
         );
-        println!("{:<28}   {}", "", q.about);
+        println!("{:<30}   {}", "", q.about);
         if !same {
             for ((layout, _), text) in ctxs.iter().zip(&rendered) {
                 eprintln!("--- {} / {}\n{text}", q.name, layout.name());
